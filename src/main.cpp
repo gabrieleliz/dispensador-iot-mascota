@@ -7,24 +7,24 @@
 #include <LiquidCrystal_I2C.h>
 #include "config.h"
 
-// Definición de Pines
+// Definición de pines del hardware
 const int PIN_SERVO = 18;
 const int PIN_DT = 19;
 const int PIN_SCK = 4;
-const int PIN_BUZZER = 23; // Pin para el zumbador (Doble canal sensorial - Unidad 6)
+const int PIN_BUZZER = 23; // Canal auditivo para alertas críticas (Unidad 6)
 
-// Objetos
+// Objetos de periféricos y red
 Servo servoCompuerta;
 HX711 escala;
-LiquidCrystal_I2C lcd(0x27, 16, 2); // Cambiar a 0x3F si la pantalla lo requiere
+LiquidCrystal_I2C lcd(0x27, 16, 2); // Ajustar a 0x3F si el módulo I2C lo requiere
 
 WiFiClient espClient;
 PubSubClient client(espClient);
 
 unsigned long ultimoEnvio = 0;
-const long intervaloEnvio = 5000; // Enviar peso cada 5 segundos
+const long intervaloEnvio = 5000; // Publicación periódica cada 5 segundos
 
-// --- UNIDAD 5: BUFFER OFFLINE (RESILIENCIA) ---
+// --- Unidad 5: Buffer circular offline en RAM ---
 #define BUFFER_SIZE 30
 float offlineBuffer[BUFFER_SIZE];
 int bufferHead = 0;
@@ -36,13 +36,13 @@ void guardarEnBuffer(float peso) {
     offlineBuffer[bufferHead] = peso;
     bufferHead = (bufferHead + 1) % BUFFER_SIZE;
     bufferCount++;
-    Serial.println("[Resiliencia] Conexión perdida. Dato guardado en buffer offline (RAM).");
+    Serial.println("[Resiliencia] Sin conexión: lectura guardada en buffer offline.");
   } else {
-    // Si el buffer se llena, sobrescribimos el más antiguo
+    // Sobrescribe la lectura más antigua si el buffer alcanza su capacidad
     offlineBuffer[bufferHead] = peso;
     bufferHead = (bufferHead + 1) % BUFFER_SIZE;
     bufferTail = (bufferTail + 1) % BUFFER_SIZE;
-    Serial.println("[Resiliencia] Buffer lleno, sobrescribiendo dato antiguo.");
+    Serial.println("[Resiliencia] Buffer lleno: sobrescribiendo dato antiguo.");
   }
 }
 
@@ -53,7 +53,7 @@ void vaciarBuffer() {
     dtostrf(pesoGuardado, 4, 1, buffer);
 
     if (client.publish(MQTT_TOPIC_PESO, buffer)) {
-      Serial.print("[Resiliencia] Sincronizando dato offline: ");
+      Serial.print("[Resiliencia] Sincronizando lectura offline: ");
       Serial.println(buffer);
       bufferTail = (bufferTail + 1) % BUFFER_SIZE;
       bufferCount--;
@@ -63,7 +63,6 @@ void vaciarBuffer() {
     }
   }
 }
-// ----------------------------------------------
 
 void setup_wifi() {
   delay(10);
@@ -78,7 +77,7 @@ void setup_wifi() {
     Serial.print(".");
   }
 
-  Serial.println("\nWiFi conectado.");
+  Serial.println("\nWi-Fi conectado.");
 }
 
 void callback(char* topic, byte* payload, unsigned int length) {
@@ -99,7 +98,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
 
     servoCompuerta.attach(PIN_SERVO, 500, 2400);
     servoCompuerta.write(90); // Abre compuerta
-    delay(3000);              // Tiempo de caída
+    delay(3000);              // Tiempo de dispensado
     servoCompuerta.write(0);  // Cierra compuerta
     delay(200);
     servoCompuerta.detach();
@@ -118,7 +117,7 @@ void reconnect() {
       client.subscribe(MQTT_TOPIC_CMD);
 
       if (bufferCount > 0) {
-        Serial.println("[Resiliencia] Sincronizando datos almacenados offline...");
+        Serial.println("[Resiliencia] Vaciando buffer offline pendiente...");
         vaciarBuffer();
       }
     } else {
@@ -134,7 +133,6 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
 
-  // Inicializar Pin del Buzzer (Unidad 6)
   pinMode(PIN_BUZZER, OUTPUT);
   digitalWrite(PIN_BUZZER, LOW);
 
@@ -202,7 +200,6 @@ void loop() {
         guardarEnBuffer(pesoActual);
       }
 
-      // Alerta de plato vacío: MQTT + Canal Auditivo (Buzzer en D23)
       if (pesoActual < 20.0) {
         client.publish(MQTT_TOPIC_ALERTA, "PLATO_VACIO");
         digitalWrite(PIN_BUZZER, HIGH);
