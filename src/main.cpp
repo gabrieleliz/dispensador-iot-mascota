@@ -1,4 +1,4 @@
-#include <Arduino.h>
+
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <ESP32Servo.h>
@@ -7,24 +7,24 @@
 #include <LiquidCrystal_I2C.h>
 #include "config.h"
 
-// Definición de pines del hardware
+// Definición de Pines
 const int PIN_SERVO = 18;
 const int PIN_DT = 19;
 const int PIN_SCK = 4;
-const int PIN_BUZZER = 23; // Canal auditivo para alertas críticas (Unidad 6)
+const int PIN_BUZZER = 23; // Pin para el zumbador
 
-// Objetos de periféricos y red
+// Objetos
 Servo servoCompuerta;
 HX711 escala;
-LiquidCrystal_I2C lcd(0x27, 16, 2); // Ajustar a 0x3F si el módulo I2C lo requiere
+LiquidCrystal_I2C lcd(0x27, 16, 2);
 
 WiFiClient espClient;
 PubSubClient client(espClient);
 
 unsigned long ultimoEnvio = 0;
-const long intervaloEnvio = 5000; // Publicación periódica cada 5 segundos
+const long intervaloEnvio = 5000; // Enviar peso cada 5 segundos
 
-// --- Unidad 5: Buffer circular offline en RAM ---
+// --- BUFFER OFFLINE (RESILIENCIA) ---
 #define BUFFER_SIZE 30
 float offlineBuffer[BUFFER_SIZE];
 int bufferHead = 0;
@@ -36,13 +36,12 @@ void guardarEnBuffer(float peso) {
     offlineBuffer[bufferHead] = peso;
     bufferHead = (bufferHead + 1) % BUFFER_SIZE;
     bufferCount++;
-    Serial.println("[Resiliencia] Sin conexión: lectura guardada en buffer offline.");
+    Serial.println("[Resiliencia] Conexión perdida. Dato guardado en buffer offline (RAM).");
   } else {
-    // Sobrescribe la lectura más antigua si el buffer alcanza su capacidad
     offlineBuffer[bufferHead] = peso;
     bufferHead = (bufferHead + 1) % BUFFER_SIZE;
     bufferTail = (bufferTail + 1) % BUFFER_SIZE;
-    Serial.println("[Resiliencia] Buffer lleno: sobrescribiendo dato antiguo.");
+    Serial.println("[Resiliencia] Buffer lleno, sobrescribiendo dato antiguo.");
   }
 }
 
@@ -51,18 +50,19 @@ void vaciarBuffer() {
     float pesoGuardado = offlineBuffer[bufferTail];
     char buffer[10];
     dtostrf(pesoGuardado, 4, 1, buffer);
-
+    
     if (client.publish(MQTT_TOPIC_PESO, buffer)) {
-      Serial.print("[Resiliencia] Sincronizando lectura offline: ");
+      Serial.print("[Resiliencia] Sincronizando dato offline: ");
       Serial.println(buffer);
       bufferTail = (bufferTail + 1) % BUFFER_SIZE;
       bufferCount--;
       delay(100);
     } else {
-      break;
+      break; 
     }
   }
 }
+// ----------------------------------------------
 
 void setup_wifi() {
   delay(10);
@@ -77,7 +77,7 @@ void setup_wifi() {
     Serial.print(".");
   }
 
-  Serial.println("\nWi-Fi conectado.");
+  Serial.println("\nWiFi conectado.");
 }
 
 void callback(char* topic, byte* payload, unsigned int length) {
@@ -91,14 +91,22 @@ void callback(char* topic, byte* payload, unsigned int length) {
   Serial.print("]: ");
   Serial.println(mensaje);
 
+  // AQUÍ SUCEDE LA ACCIÓN DE SERVIR Y EL BUZZER SONARÁ ÚNICAMENTE AQUÍ
   if (String(topic) == MQTT_TOPIC_CMD && mensaje == "DISPENSAR") {
     lcd.clear();
     lcd.setCursor(0, 0);
     lcd.print("Sirviendo comida");
-
+    
+    // Enciende el buzzer mientras sirve la comida
+    digitalWrite(PIN_BUZZER, HIGH);
+    
     servoCompuerta.attach(PIN_SERVO, 500, 2400);
     servoCompuerta.write(90); // Abre compuerta
-    delay(3000);              // Tiempo de dispensado
+    delay(3000);              // Tiempo de caída
+    
+    // Apaga el buzzer al terminar de servir
+    digitalWrite(PIN_BUZZER, LOW);
+    
     servoCompuerta.write(0);  // Cierra compuerta
     delay(200);
     servoCompuerta.detach();
@@ -115,9 +123,9 @@ void reconnect() {
     if (client.connect("ESP32DispensadorClient", MQTT_USER, MQTT_PASSWORD)) {
       Serial.println("conectado");
       client.subscribe(MQTT_TOPIC_CMD);
-
+      
       if (bufferCount > 0) {
-        Serial.println("[Resiliencia] Vaciando buffer offline pendiente...");
+        Serial.println("[Resiliencia] Sincronizando datos almacenados offline...");
         vaciarBuffer();
       }
     } else {
@@ -152,9 +160,9 @@ void setup() {
   servoCompuerta.detach();
 
   escala.begin(PIN_DT, PIN_SCK);
-  escala.set_scale(420.0);
+  escala.set_scale(420.0); 
   delay(500);
-  escala.tare();
+  escala.tare();           
 
   setup_wifi();
   client.setServer(MQTT_BROKER_IP, MQTT_BROKER_PORT);
@@ -167,7 +175,13 @@ void setup() {
 
 void loop() {
   if (WiFi.status() != WL_CONNECTED) {
-    setup_wifi();
+    Serial.println("Reconectando a Wi-Fi...");
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    while (WiFi.status() != WL_CONNECTED) {
+      delay(500);
+      Serial.print(".");
+    }
+    Serial.println("\nWi-Fi reconectado.");
   }
 
   if (!client.connected()) {
@@ -200,11 +214,10 @@ void loop() {
         guardarEnBuffer(pesoActual);
       }
 
+      // SE ELIMINÓ LA ACTIVACIÓN DEL BUZZER AQUÍ.
+      // Ahora solo publica la alerta de plato vacío al broker, sin emitir sonido físico.
       if (pesoActual < 20.0) {
         client.publish(MQTT_TOPIC_ALERTA, "PLATO_VACIO");
-        digitalWrite(PIN_BUZZER, HIGH);
-        delay(200);
-        digitalWrite(PIN_BUZZER, LOW);
       }
     } else {
       guardarEnBuffer(pesoActual);
