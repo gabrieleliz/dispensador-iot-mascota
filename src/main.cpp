@@ -11,6 +11,7 @@
 const int PIN_SERVO = 18;
 const int PIN_DT = 19;
 const int PIN_SCK = 4;
+const int PIN_BUZZER = 23; // Pin para el zumbador (Doble canal sensorial - Unidad 6)
 
 // Objetos
 Servo servoCompuerta;
@@ -133,6 +134,10 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
 
+  // Inicializar Pin del Buzzer (Unidad 6)
+  pinMode(PIN_BUZZER, OUTPUT);
+  digitalWrite(PIN_BUZZER, LOW);
+
   Wire.begin(21, 22);
   lcd.init();
   lcd.backlight();
@@ -197,8 +202,12 @@ void loop() {
         guardarEnBuffer(pesoActual);
       }
 
+      // Alerta de plato vacío: MQTT + Canal Auditivo (Buzzer en D23)
       if (pesoActual < 20.0) {
         client.publish(MQTT_TOPIC_ALERTA, "PLATO_VACIO");
+        digitalWrite(PIN_BUZZER, HIGH);
+        delay(200);
+        digitalWrite(PIN_BUZZER, LOW);
       }
     } else {
       guardarEnBuffer(pesoActual);
