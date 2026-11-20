@@ -23,6 +23,47 @@ PubSubClient client(espClient);
 unsigned long ultimoEnvio = 0;
 const long intervaloEnvio = 5000; // Enviar peso cada 5 segundos
 
+// --- UNIDAD 5: BUFFER OFFLINE (RESILIENCIA) ---
+#define BUFFER_SIZE 30
+float offlineBuffer[BUFFER_SIZE];
+int bufferHead = 0;
+int bufferTail = 0;
+int bufferCount = 0;
+
+void guardarEnBuffer(float peso) {
+  if (bufferCount < BUFFER_SIZE) {
+    offlineBuffer[bufferHead] = peso;
+    bufferHead = (bufferHead + 1) % BUFFER_SIZE;
+    bufferCount++;
+    Serial.println("[Resiliencia] Conexión perdida. Dato guardado en buffer offline (RAM).");
+  } else {
+    // Si el buffer se llena, sobrescribimos el más antiguo
+    offlineBuffer[bufferHead] = peso;
+    bufferHead = (bufferHead + 1) % BUFFER_SIZE;
+    bufferTail = (bufferTail + 1) % BUFFER_SIZE;
+    Serial.println("[Resiliencia] Buffer lleno, sobrescribiendo dato antiguo.");
+  }
+}
+
+void vaciarBuffer() {
+  while (bufferCount > 0 && client.connected()) {
+    float pesoGuardado = offlineBuffer[bufferTail];
+    char buffer[10];
+    dtostrf(pesoGuardado, 4, 1, buffer);
+
+    if (client.publish(MQTT_TOPIC_PESO, buffer)) {
+      Serial.print("[Resiliencia] Sincronizando dato offline: ");
+      Serial.println(buffer);
+      bufferTail = (bufferTail + 1) % BUFFER_SIZE;
+      bufferCount--;
+      delay(100);
+    } else {
+      break;
+    }
+  }
+}
+// ----------------------------------------------
+
 void setup_wifi() {
   delay(10);
   Serial.println();
@@ -74,6 +115,11 @@ void reconnect() {
     if (client.connect("ESP32DispensadorClient", MQTT_USER, MQTT_PASSWORD)) {
       Serial.println("conectado");
       client.subscribe(MQTT_TOPIC_CMD);
+
+      if (bufferCount > 0) {
+        Serial.println("[Resiliencia] Sincronizando datos almacenados offline...");
+        vaciarBuffer();
+      }
     } else {
       Serial.print("falló, rc=");
       Serial.print(client.state());
@@ -87,7 +133,6 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
 
-  // Inicializar Pantalla LCD
   Wire.begin(21, 22);
   lcd.init();
   lcd.backlight();
@@ -96,7 +141,6 @@ void setup() {
   lcd.setCursor(0, 0);
   lcd.print("Iniciando...");
 
-  // Inicializar Servomotor
   ESP32PWM::allocateTimer(0);
   servoCompuerta.setPeriodHertz(50);
   servoCompuerta.attach(PIN_SERVO, 500, 2400);
@@ -104,13 +148,11 @@ void setup() {
   delay(300);
   servoCompuerta.detach();
 
-  // Inicializar Sensor de Peso
   escala.begin(PIN_DT, PIN_SCK);
   escala.set_scale(420.0);
   delay(500);
   escala.tare();
 
-  // Red
   setup_wifi();
   client.setServer(MQTT_BROKER_IP, MQTT_BROKER_PORT);
   client.setCallback(callback);
@@ -147,11 +189,19 @@ void loop() {
     if (client.connected()) {
       char buffer[10];
       dtostrf(pesoActual, 4, 1, buffer);
-      client.publish(MQTT_TOPIC_PESO, buffer);
+      if (client.publish(MQTT_TOPIC_PESO, buffer)) {
+        if (bufferCount > 0) {
+          vaciarBuffer();
+        }
+      } else {
+        guardarEnBuffer(pesoActual);
+      }
 
       if (pesoActual < 20.0) {
         client.publish(MQTT_TOPIC_ALERTA, "PLATO_VACIO");
       }
+    } else {
+      guardarEnBuffer(pesoActual);
     }
   }
 }
